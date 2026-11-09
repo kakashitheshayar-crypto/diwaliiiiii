@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Happy Diwali</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Georgia, serif; color: #f5d58a; touch-action: none; }
+  canvas { display: block; }
+
+  #prompt {
+    position: fixed; left: 50%; top: 14%; transform: translateX(-50%); z-index: 8;
+    padding: 12px 24px; border: 1px solid #ffb34788; border-radius: 999px;
+    background: rgba(0,0,0,.55); color: #ffd98a; font-size: 17px; font-style: italic;
+    pointer-events: none; user-select: none; text-align: center;
+    text-shadow: 0 0 14px #ff9a00aa;
+  }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 22%; transform: translateX(-50%); z-index: 5;
+    padding: 10px 20px; border: 1px solid #ffb34788; border-radius: 999px;
+    background: rgba(0,0,0,.6); color: #ffd98a; font-size: 16px;
+    opacity: 0; transition: opacity .25s; pointer-events: none; user-select: none;
+  }
+  #hint.show { opacity: 1; }
+  body.touch #hint.show { pointer-events: auto; }
+
+  #legend {
+    position: fixed; left: 14px; top: 14px; z-index: 4;
+    font-size: 13px; line-height: 1.7; color: #d9b970; opacity: .8; pointer-events: none;
+    background: rgba(0,0,0,.35); padding: 8px 12px; border-radius: 8px;
+  }
+  #legend b { color: #ffd98a; }
+  body.touch #legend { display: none; }
+
+  #pad {
+    position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 6;
+    display: none; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 94vw;
+  }
+  body.touch #pad { display: flex; }
+  #pad button {
+    min-width: 46px; height: 46px; border-radius: 23px; border: 1px solid #ffb34766;
+    background: rgba(20,12,0,.65); color: #ffd98a; font-size: 18px; padding: 0 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="prompt">Click karo: mouse control aur awaaz shuru</div>
+<div id="hint"></div>
+<div id="legend">
+  <b>W A S D</b> chalo &nbsp; <b>Shift</b> daudo &nbsp; <b>Space</b> kudo &nbsp; <b>Mouse</b> dekho<br>
+  <b>1</b> Anaar &nbsp; <b>2</b> Chakri &nbsp; <b>3</b> Phuljhadi &nbsp; <b>4</b> Bomb &nbsp; <b>5</b> Ladi<br>
+  <b>R / Click</b> Rocket &nbsp; <b>E</b> switch (laal roshni ke paas)
+</div>
+<div id="pad">
+  <button data-a="jump">⤒</button>
+  <button data-a="sprint">⚡</button>
+  <button data-a="rocket">🚀</button>
+  <button data-a="anaar">🌻</button>
+  <button data-a="chakri">🌀</button>
+  <button data-a="phul">✨</button>
+  <button data-a="bomb">💣</button>
+  <button data-a="ladi">🧨</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  // ---------- Basic setup ----------
+  const isTouch = matchMedia('(pointer: coarse)').matches;
+  if (isTouch) {
+    document.body.classList.add('touch');
+    document.getElementById('prompt').style.display = 'none';
+  }
+  const G = 9.81;                                // asli gravity (m/s^2)
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setClearColor(0x05060d);
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x05060d, 0.0045);
+  scene.add(new THREE.AmbientLight(0x7080c0, 1.0));            // halki raat ki roshni
+
+  const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 800);
+  camera.rotation.order = 'YXZ';                 // pehle yaw (left-right), phir pitch (up-down)
+  camera.position.set(0, 1.7, 9);
+
+  // dekhne ke angles (first-person)
+  let yaw = 0, pitch = 0, shake = 0;
+
+  // ---------- World ----------
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(1000, 1000),
+    new THREE.MeshStandardMaterial({ color: 0x2d2a3a, roughness: 0.95 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  const obstacles = [];                          // circle colliders {x, z, r, h}
+  const pillarMat = new THREE.MeshStandardMaterial({ color: 0x4a4458, roughness: 0.85 });
+  for (let i = 0; i < 70; i++) {
+    const x = (Math.random() - 0.5) * 260;
+    const z = (Math.random() - 0.5) * 260;
+    if (Math.hypot(x, z + 2) < 14) continue;
+    const r = 0.6 + Math.random() * 1.2;
+    const h = 4 + Math.random() * 16;
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.1, h, 10), pillarMat);
+    m.position.set(x, h / 2, z);
+    scene.add(m);
+    obstacles.push({ x, z, r: r * 1.1 + 0.35, h });
+  }
+
+  // ---------- Shared glow sprite ----------
+  const spriteCanvas = document.createElement('canvas');
+  spriteCanvas.width = spriteCanvas.height = 64;
+  {
+    const c = spriteCanvas.getContext('2d');
+    const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.25, 'rgba(255,255,255,.6)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, 64, 64);
+  }
+  const spriteTex = new THREE.CanvasTexture(spriteCanvas);
+
+  // ---------- The switch ----------
+  const SWITCH_POS = new THREE.Vector3(0, 0, -4);
+  const sw = new THREE.Group();
+  sw.position.copy(SWITCH_POS);
+  scene.add(sw);
+
+  const metal = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.6 });
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.3, 0.5), metal);
+  post.position.y = 0.65;
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, 0.14), metal);
+  panel.position.y = 1.55;
+  sw.add(post, panel);
+
+  const leverPivot = new THREE.Group();
+  leverPivot.position.set(0, 1.45, 0.1);
+  const lever = new THREE.Mesh(
+    new THREE.BoxGeometry(0.09, 0.42, 0.09),
+    new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.3, metalness: 0.8 })
+  );
+  lever.position.y = 0.2;
+  leverPivot.add(lever);
+  sw.add(leverPivot);
+
+  const ledMat = new THREE.MeshBasicMaterial({ color: 0xaa2200 });
+  const led = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 12), ledMat);
+  led.position.set(0, 1.9, 0.1);
+  sw.add(led);
+
+  const ledLight = new THREE.PointLight(0xff2200, 0.9, 10, 2);
+  ledLight.position.set(0, 1.9, 0.5);
+  sw.add(ledLight);
+
+  obstacles.push({ x: SWITCH_POS.x, z: SWITCH_POS.z, r: 0.8, h: 2.6 });
+
+  // ---------- The player (player: physics + animation (first-person mein body chhupa hai)) ----------
+  const player = {
+    pos: new THREE.Vector3(0, 0, 9),
+    vel: new THREE.Vector3(),
+    onGround: true,
+    face: 0,          // character kis taraf dekh raha hai
+    phase: 0,         // chalne ke animation ka phase
+    amp: 0            // haath-pair ke hilne ki taakat
+  };
+  const avatar = new THREE.Group();
+  const body = new THREE.Group();
+  avatar.add(body);
+  avatar.visible = false;                        // first-person: apna body nahi dikhta
+  scene.add(avatar);
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xd9a37a, roughness: 0.7 });
+  const kurtaMat = new THREE.MeshStandardMaterial({ color: 0xe8731c, roughness: 0.7 });
+  const pantMat = new THREE.MeshStandardMaterial({ color: 0x2a2a45, roughness: 0.8 });
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.28), kurtaMat);
+  torso.position.y = 1.2;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 14, 12), skinMat);
+  head.position.y = 1.72;
+  body.add(torso, head);
+
+  function limb(w, h, d, mat, px, py) {              // pivot upar, limb neeche latakta hai
+    const pivot = new THREE.Group();
+    pivot.position.set(px, py, 0);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.y = -h / 2;
+    pivot.add(m);
+    body.add(pivot);
+    return pivot;
+  }
+  const legL = limb(0.18, 0.85, 0.2, pantMat, -0.13, 0.85);
+  const legR = limb(0.18, 0.85, 0.2, pantMat, 0.13, 0.85);
+  const armL = limb(0.14, 0.66, 0.16, kurtaMat, -0.33, 1.52);
+  const armR = limb(0.14, 0.66, 0.16, kurtaMat, 0.33, 1.52);
+
+  // ---------- Lights: blast flashes, cracker lights, floating wisps ----------
+  const flashes = [];
+  for (let i = 0; i < 4; i++) {
+    const l = new THREE.PointLight(0xffffff, 0, 170, 1.4);
+    scene.add(l);
+    flashes.push(l);
+  }
+  let flashIdx = 0;
+  function flash(x, y, z, color, power) {
+    const l = flashes[flashIdx++ % flashes.length];
+    l.position.set(x, y, z);
+    l.color.copy(color);
+    l.intensity = power;
+  }
+
+  const crackerLights = [];
+  for (let i = 0; i < 2; i++) {
+    const l = new THREE.PointLight(0xffaa44, 0, 28, 2);
+    scene.add(l);
+    crackerLights.push(l);
+  }
+
+  const wisps = [];
+  [0xffb060, 0xff7090, 0x70c0ff].forEach((hex, i) => {
+    const l = new THREE.PointLight(hex, 1.4, 40, 1.6);
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: spriteTex, color: hex, blending: THREE.AdditiveBlending,
+      depthWrite: false, transparent: true, fog: false
+    }));
+    s.scale.set(4, 4, 1);
+    l.add(s);
+    scene.add(l);
+    wisps.push({ l, ph: i * 2.1, sp: 0.6 + i * 0.25 });
+  });
+
+  // ---------- Floating light fields (fireflies, sky lanterns, ground diyas) ----------
+  const fields = [];
+  function makeField(o) {
+    const n = o.count;
+    const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+    const base = new Float32Array(n * 3), ph = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 2 * o.range;
+      pos[i * 3 + 1] = o.y0 + Math.random() * (o.y1 - o.y0);
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 2 * o.range;
+      const c = o.palette[Math.floor(Math.random() * o.palette.length)];
+      base[i * 3] = c[0]; base[i * 3 + 1] = c[1]; base[i * 3 + 2] = c[2];
+      ph[i] = Math.random() * 6.283;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3).setUsage(THREE.DynamicDrawUsage));
+    const p = new THREE.Points(g, new THREE.PointsMaterial({
+      size: o.size, map: spriteTex, vertexColors: true, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true, fog: false
+    }));
+    p.frustumCulled = false;
+    scene.add(p);
+    fields.push({ o, pos, col, base, ph, g });
+  }
+
+  makeField({ count: 260, size: 0.9, y0: 1.5, y1: 38, range: 90, rise: 0.15, drift: 0.5, freq: 2, amp: 0.35,
+    palette: [[1, 0.8, 0.35], [1, 0.55, 0.2], [1, 0.9, 0.7], [1, 0.5, 0.6], [0.5, 0.85, 1]] });   // jugnu
+  makeField({ count: 30, size: 4.5, y0: 8, y1: 75, range: 150, rise: 1.3, drift: 0.3, freq: 1, amp: 0.15,
+    palette: [[1, 0.5, 0.12], [1, 0.62, 0.2]] });                                                  // aasmani kandil
+  makeField({ count: 100, size: 1.6, y0: 0.28, y1: 0.28, range: 70, rise: 0, drift: 0, freq: 9, amp: 0.3,
+    palette: [[1, 0.6, 0.15], [1, 0.7, 0.25]] });                                                  // zameen ke diye
+
+  function updateFields(dt, t) {
+    const cx = player.pos.x, cz = player.pos.z;
+    for (const f of fields) {
+      const { o, pos, col, base, ph } = f;
+      for (let i = 0; i < o.count; i++) {
+        const a = i * 3;
+        pos[a] += Math.sin(t * 0.3 + ph[i]) * o.drift * dt;
+        pos[a + 2] += Math.cos(t * 0.27 + ph[i]) * o.drift * dt;
+        if (o.rise) { pos[a + 1] += o.rise * dt; if (pos[a + 1] > o.y1) pos[a + 1] = o.y0; }
+        const dx = pos[a] - cx, dz = pos[a + 2] - cz;
+        if (dx > o.range) pos[a] -= 2 * o.range; else if (dx < -o.range) pos[a] += 2 * o.range;
+        if (dz > o.range) pos[a + 2] -= 2 * o.range; else if (dz < -o.range) pos[a + 2] += 2 * o.range;
+        const k = 1 - o.amp + o.amp * Math.sin(t * o.freq + ph[i] * 3);
+        col[a] = base[a] * k; col[a + 1] = base[a + 1] * k; col[a + 2] = base[a + 2] * k;
+      }
+      f.g.attributes.position.needsUpdate = true;
+      f.g.attributes.color.needsUpdate = true;
+    }
+    for (const w of wisps) {
+      const p = t * 0.2 * w.sp + w.ph;
+      w.l.position.set(
+        cx + Math.sin(p) * 22,
+        4 + (Math.sin(t * 0.3 * w.sp + w.ph * 2) + 1) * 7,
+        cz + Math.cos(p * 0.9) * 22
+      );
+      w.l.intensity = 1.2 + Math.sin(t * 1.7 + w.ph) * 0.3;
+    }
+  }
+
+  // ---------- Spark particle pool ----------
+  const MAX = 16000;
+  const pPos = new Float32Array(MAX * 3);
+  const pCol = new Float32Array(MAX * 3);
+  const pVel = new Float32Array(MAX * 3);
+  const pBase = new Float32Array(MAX * 3);
+  const pLife = new Float32Array(MAX);
+  const pMax = new Float32Array(MAX);
+  const pGrav = new Float32Array(MAX);
+  let head_ = 0;
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pPos, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('color', new THREE.BufferAttribute(pCol, 3).setUsage(THREE.DynamicDrawUsage));
+
+  const points = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 2.4,
+    map: spriteTex,
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+    fog: false
+  }));
+  points.frustumCulled = false;
+  scene.add(points);
+
+  function spawn(x, y, z, vx, vy, vz, r, g, b, life, grav) {
+    const i = head_;
+    head_ = (head_ + 1) % MAX;
+    const a = i * 3;
+    pPos[a] = x; pPos[a + 1] = y; pPos[a + 2] = z;
+    pVel[a] = vx; pVel[a + 1] = vy; pVel[a + 2] = vz;
+    pBase[a] = r; pBase[a + 1] = g; pBase[a + 2] = b;
+    pLife[i] = life; pMax[i] = life; pGrav[i] = grav;
+  }
+
+  function updateParticles(dt) {
+    const drag = Math.exp(-dt * 1.5);              // hawa ka rukawat
+    for (let i = 0; i < MAX; i++) {
+      if (pLife[i] <= 0) continue;
+      const a = i * 3;
+      pLife[i] -= dt;
+      if (pLife[i] <= 0) {
+        pCol[a] = pCol[a + 1] = pCol[a + 2] = 0;
+        continue;
+      }
+      pVel[a] *= drag; pVel[a + 1] = pVel[a + 1] * drag - pGrav[i] * dt; pVel[a + 2] *= drag;
+      pPos[a] += pVel[a] * dt;
+      pPos[a + 1] += pVel[a + 1] * dt;
+      pPos[a + 2] += pVel[a + 2] * dt;
+      if (pPos[a + 1] < 0.02) { pPos[a + 1] = 0.02; pVel[a + 1] *= -0.25; }
+      let f = pLife[i] / pMax[i];
+      f = f * f * (0.7 + Math.random() * 0.3);
+      pCol[a] = pBase[a] * f; pCol[a + 1] = pBase[a + 1] * f; pCol[a + 2] = pBase[a + 2] * f;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+  }
+
+  // ---------- Sound (WebAudio) ----------
+  let ac = null, noiseBuf = null, master = null;
+  function initAudio() {
+    if (ac) return;
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    master = ac.createGain();
+    master.gain.value = 0.8;
+    master.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  function noise(delay, dur, type, f0, f1, vol, q) {
+    if (!ac) return;
+    const t = ac.currentTime + delay;
+    const src = ac.createBufferSource();
+    src.buffer = noiseBuf;
+    src.loop = true;
+    const filt = ac.createBiquadFilter();
+    filt.type = type;
+    filt.Q.value = q || 1;
+    filt.frequency.setValueAtTime(f0, t);
+    filt.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(filt); filt.connect(g); g.connect(master);
+    src.start(t, Math.random() * 0.5);
+    src.stop(t + dur + 0.1);
+  }
+  const boom = (delay, vol) => noise(delay, 1.4, 'lowpass', 1000, 60, vol, 0.7);
+  const whoosh = (vol) => noise(0, 0.7, 'bandpass', 500, 2200, vol, 2);
+  const crackle = (delay, vol) => { for (let i = 0; i < 6; i++) noise(delay + 0.15 + Math.random() * 0.9, 0.05, 'highpass', 4000, 6000, vol, 1); };
+  const bang = (vol) => noise(0, 0.25, 'lowpass', 3500, 200, vol, 0.8);
+  const thump = (vol) => noise(0, 1.6, 'lowpass', 400, 35, vol, 0.8);
+  const thud = (vol) => noise(0, 0.12, 'lowpass', 300, 60, vol, 0.7);     // kudke zameen pe utarne ki awaaz
+  function whistle(dur) {
+    if (!ac) return;
+    const t = ac.currentTime;
+    const o = ac.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(700, t);
+    o.frequency.exponentialRampToValueAtTime(2200, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.05, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  function clickSound() {
+    if (!ac) return;
+    const t = ac.currentTime;
+    const o = ac.createOscillator();
+    o.type = 'square';
+    o.frequency.setValueAtTime(180, t);
+    o.frequency.exponentialRampToValueAtTime(60, t + 0.08);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0.25, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + 0.12);
+  }
+
+  // ---------- Sky fireworks (rockets) ----------
+  const rockets = [];
+
+  function randDir() {
+    const u = Math.random() * 2 - 1, t = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u);
+    return [s * Math.cos(t), u, s * Math.sin(t)];
+  }
+
+  function launch(nearFront) {
+    const spread = nearFront ? 1.2 : 3.2;
+    const a = yaw + (Math.random() - 0.5) * spread;
+    const r = 45 + Math.random() * 55;
+    const vy = 25 + Math.random() * 6;             // upar jaane ki speed; gravity usse ghatati hai
+    rockets.push({
+      x: player.pos.x - Math.sin(a) * r,
+      y: 0,
+      z: player.pos.z - Math.cos(a) * r,
+      vx: (Math.random() - 0.5) * 4, vy, vz: (Math.random() - 0.5) * 4, g: G,
+      t: 0, fuse: (vy / G) * (0.9 + Math.random() * 0.1),
+      hue: Math.random()
+    });
+    whoosh(0.12);
+  }
+
+  function placeAhead(dist) {
+    return { x: player.pos.x - Math.sin(yaw) * dist, z: player.pos.z - Math.cos(yaw) * dist };
+  }
+
+  function playerRocket() {
+    initAudio();
+    const p = placeAhead(6 + Math.random() * 2);
+    const vy = 25 + Math.random() * 7;
+    const fuse = (vy / G) * (0.92 + Math.random() * 0.08);
+    rockets.push({
+      x: p.x, y: 0, z: p.z,
+      vx: (Math.random() - 0.5) * 1.5, vy, vz: (Math.random() - 0.5) * 1.5, g: G,
+      t: 0, fuse, hue: Math.random()
+    });
+    whistle(fuse);
+    whoosh(0.15);
+  }
+
+  function explode(x, y, z, hue) {
+    const col = new THREE.Color().setHSL(hue, 1, 0.55);
+    const col2 = new THREE.Color().setHSL((hue + 0.5) % 1, 1, 0.6);
+    const gold = new THREE.Color(1, 0.72, 0.25);
+    const roll = Math.random();
+    let crack = false;
+
+    if (roll < 0.35) {
+      for (let i = 0; i < 240; i++) {
+        const d = randDir(), s = 17 + Math.random() * 6;
+        spawn(x, y, z, d[0] * s, d[1] * s, d[2] * s, col.r, col.g, col.b, 1.6 + Math.random() * 0.8, G);
+      }
+    } else if (roll < 0.55) {
+      const u = randDir(), w = randDir();
+      const v = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+      const vl = Math.hypot(v[0], v[1], v[2]) || 1;
+      for (let i = 0; i < 180; i++) {
+        const ang = (i / 180) * Math.PI * 2, s = 20;
+        const cx = Math.cos(ang) * s, cy = Math.sin(ang) * s;
+        spawn(x, y, z,
+          u[0] * cx + (v[0] / vl) * cy, u[1] * cx + (v[1] / vl) * cy, u[2] * cx + (v[2] / vl) * cy,
+          col.r, col.g, col.b, 1.8, 6);
+      }
+    } else if (roll < 0.78) {
+      crack = true;
+      for (let i = 0; i < 220; i++) {
+        const d = randDir(), s = 9 + Math.random() * 8;
+        spawn(x, y, z, d[0] * s, d[1] * s, d[2] * s, gold.r, gold.g, gold.b, 3.2 + Math.random() * 1.0, 5);
+      }
+    } else {
+      for (let i = 0; i < 260; i++) {
+        const d = randDir(), inner = i % 2 === 0, s = inner ? 10 : 22;
+        const c = inner ? col2 : col;
+        spawn(x, y, z, d[0] * s, d[1] * s, d[2] * s, c.r, c.g, c.b, 1.8 + Math.random() * 0.6, G);
+      }
+      crack = true;
+    }
+
+    flash(x, y, z, col, 6);
+    const dist = Math.hypot(x - camera.position.x, y - camera.position.y, z - camera.position.z);
+    const delay = Math.min(dist / 140, 1.5);
+    const vol = Math.max(0.25, 1.1 - dist / 260);
+    boom(delay, vol);
+    if (crack) crackle(delay, 0.1);
+  }
+
+  function updateRockets(dt) {
+    for (let i = rockets.length - 1; i >= 0; i--) {
+      const r = rockets[i];
+      r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+      r.vy -= r.g * dt;
+      r.t += dt;
+      for (let k = 0; k < 2; k++) {
+        spawn(r.x, r.y, r.z, (Math.random() - 0.5) * 1.5, -2 - Math.random() * 2, (Math.random() - 0.5) * 1.5,
+          1, 0.6, 0.2, 0.5, G);
+      }
+      if (r.t >= r.fuse) {
+        explode(r.x, r.y, r.z, r.hue);
+        rockets.splice(i, 1);
+      }
+    }
+  }
+
+  // ---------- Patake: anaar, chakri, phuljhadi, bomb, ladi ----------
+  const crackers = [];
+  const clayMat = new THREE.MeshStandardMaterial({ color: 0xb5532b, roughness: 0.8 });
+  const redMat = new THREE.MeshStandardMaterial({ color: 0xc0211f, roughness: 0.7 });
+  const paperMat = new THREE.MeshStandardMaterial({ color: 0xe8c26a, roughness: 0.7 });
+  const stickMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.5, metalness: 0.5 });
+  const LADI_N = 24;
+
+  function lightCracker(type) {
+    if (crackers.length >= 14) return;
+    initAudio();
+    const p = placeAhead(4.5 + Math.random() * 1.2);
+    const c = { type, x: p.x, z: p.z, t: 0, ang: 0, pops: 0, nextPop: 0.5, flashAmt: 0, fx: p.x, fz: p.z, mesh: new THREE.Group(), boxes: [] };
+    c.mesh.position.set(p.x, 0, p.z);
+
+    if (type === 'anaar') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.26, 0.55, 14), clayMat);
+      m.position.y = 0.275;
+      c.mesh.add(m);
+      noise(0, 6, 'bandpass', 2500, 1800, 0.06, 0.6);
+    } else if (type === 'chakri') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.05, 18), paperMat);
+      m.position.y = 0.03;
+      c.mesh.add(m);
+      c.spinner = m;
+      noise(0, 5.5, 'bandpass', 1800, 2600, 0.05, 0.8);
+    } else if (type === 'phul') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 1.0, 6), stickMat);
+      m.position.y = 0.5;
+      c.mesh.add(m);
+      noise(0, 8, 'highpass', 5000, 4000, 0.03, 1);
+    } else if (type === 'bomb') {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.2, 12), redMat);
+      m.position.y = 0.1;
+      c.mesh.add(m);
+      noise(0, 1.5, 'highpass', 5000, 3000, 0.04, 1);
+    } else if (type === 'ladi') {
+      c.mesh.rotation.y = yaw;
+      for (let i = 0; i < LADI_N; i++) {
+        const b = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.2, 0.07), redMat);
+        b.position.set((i - (LADI_N - 1) / 2) * 0.28, 0.1, 0);
+        c.mesh.add(b);
+        c.boxes.push(b);
+      }
+    }
+    scene.add(c.mesh);
+    crackers.push(c);
+  }
+
+  function removeCracker(i) {
+    const c = crackers[i];
+    scene.remove(c.mesh);
+    c.mesh.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    crackers.splice(i, 1);
+  }
+
+  function updateCrackers(dt) {
+    let li = 0;
+    const useLight = (x, y, z, hex, power) => {
+      if (li >= crackerLights.length) return;
+      const L = crackerLights[li++];
+      L.position.set(x, y, z); L.color.setHex(hex); L.intensity = power;
+    };
+
+    for (let i = crackers.length - 1; i >= 0; i--) {
+      const c = crackers[i];
+      c.t += dt;
+      let done = false;
+
+      if (c.type === 'anaar') {
+        if (c.t < 6) {
+          const fade = c.t > 5 ? (6 - c.t) : 1;
+          const n = Math.ceil(dt * 450 * fade);
+          for (let k = 0; k < n; k++) {
+            const a = Math.random() * 6.283, s = Math.random() * 3, hot = Math.random();
+            spawn(c.x, 0.6, c.z, Math.cos(a) * s, 9 + Math.random() * 7, Math.sin(a) * s,
+              1, 0.55 + hot * 0.4, 0.15 + hot * 0.5, 0.9 + Math.random() * 0.7, G);
+          }
+          useLight(c.x, 1.5, c.z, 0xffaa44, (2 + Math.random()) * fade);
+        } else done = true;
+
+      } else if (c.type === 'chakri') {
+        if (c.t < 5.5) {
+          const w = Math.min(c.t / 0.8, 1) * 20 * (c.t > 4.5 ? (5.5 - c.t) : 1);
+          c.ang += w * dt;
+          c.spinner.rotation.y = c.ang;
+          for (let j = 0; j < 3; j++) {
+            const a = c.ang + j * 2.094;
+            for (let k = 0; k < 2; k++) {
+              const sx = Math.cos(a), sz = Math.sin(a), green = Math.random() < 0.2;
+              spawn(c.x + sx * 0.25, 0.15, c.z + sz * 0.25,
+                -sz * (7 + Math.random() * 3) + sx * 1.5, 1.5 + Math.random() * 2.5, sx * (7 + Math.random() * 3) + sz * 1.5,
+                green ? 0.4 : 1, green ? 1 : 0.65, green ? 0.3 : 0.2, 0.55, G);
+            }
+          }
+          useLight(c.x, 0.8, c.z, 0xffbb55, 1.6);
+        } else done = true;
+
+      } else if (c.type === 'phul') {
+        if (c.t < 8) {
+          const fade = c.t > 7 ? (8 - c.t) : 1;
+          const n = Math.ceil(6 * fade);
+          for (let k = 0; k < n; k++) {
+            const d = randDir(), s = 2 + Math.random() * 4;
+            spawn(c.x, 1.0, c.z, d[0] * s, d[1] * s + 1.5, d[2] * s, 1, 0.85, 0.5, 0.35 + Math.random() * 0.25, G);
+          }
+          useLight(c.x, 1.1, c.z, 0xffe0a0, 1.2 * fade);
+        } else done = true;
+
+      } else if (c.type === 'bomb') {
+        if (c.t < 1.5) {
+          for (let k = 0; k < 2; k++) {
+            spawn(c.x, 0.25, c.z, (Math.random() - 0.5) * 2, 2 + Math.random() * 2, (Math.random() - 0.5) * 2, 1, 0.6, 0.2, 0.3, G);
+          }
+        } else {
+          const y = 0.8;
+          for (let k = 0; k < 160; k++) {
+            const d = randDir(), s = 10 + Math.random() * 16, h = Math.random();
+            spawn(c.x, y, c.z, d[0] * s, Math.abs(d[1]) * s, d[2] * s, 1, 0.6 + h * 0.4, 0.2 + h * 0.6, 0.45 + Math.random() * 0.35, G);
+          }
+          for (let k = 0; k < 90; k++) {
+            const a = Math.random() * 6.283, s = 22 + Math.random() * 8;
+            spawn(c.x, 0.3, c.z, Math.cos(a) * s, 0.5 + Math.random() * 1.5, Math.sin(a) * s, 1, 0.8, 0.5, 0.5, G);
+          }
+          flash(c.x, 1.5, c.z, new THREE.Color(1, 0.7, 0.35), 12);
+          bang(1.0); thump(1.0);
+          const dist = Math.hypot(c.x - player.pos.x, c.z - player.pos.z);
+          shake = Math.max(shake, Math.max(0, 1 - dist / 30) * 0.06);
+          done = true;
+        }
+
+      } else if (c.type === 'ladi') {
+        while (c.pops < LADI_N && c.t >= c.nextPop) {
+          const b = c.boxes[c.pops];
+          const px = c.x + Math.cos(yaw) * b.position.x, pz = c.z - Math.sin(yaw) * b.position.x;
+          for (let k = 0; k < 28; k++) {
+            const d = randDir(), s = 5 + Math.random() * 7;
+            spawn(px, 0.3, pz, d[0] * s, Math.abs(d[1]) * s, d[2] * s, 1, 0.85, 0.5, 0.3 + Math.random() * 0.2, G);
+          }
+          bang(0.18 + Math.random() * 0.12);
+          c.mesh.remove(b);
+          c.fx = px; c.fz = pz; c.flashAmt = 4;
+          c.pops++;
+          c.nextPop += 0.1 + Math.random() * 0.12;
+        }
+        c.flashAmt *= Math.exp(-dt * 10);
+        useLight(c.fx, 0.8, c.fz, 0xffcc77, c.flashAmt);
+        if (c.pops >= LADI_N && c.t > c.nextPop + 0.3) done = true;
+      }
+
+      if (done) removeCracker(i);
+    }
+    for (; li < crackerLights.length; li++) crackerLights[li].intensity = 0;
+  }
+
+  // ---------- "Happy Diwali" text in the sky ----------
+  let textMesh = null, textOpacity = 0, textTarget = 0;
+  const TEXT_POS = new THREE.Vector3(0, 36, -85);
+
+  (function buildText() {
+    const c = document.createElement('canvas');
+    c.width = 1024; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const grad = ctx.createLinearGradient(0, 60, 0, 200);
+    grad.addColorStop(0, '#fff2b8');
+    grad.addColorStop(0.5, '#ffc34d');
+    grad.addColorStop(1, '#ff8a1f');
+    ctx.shadowColor = '#ff9d00';
+    ctx.shadowBlur = 36;
+    ctx.fillStyle = grad;
+    ctx.font = 'italic bold 150px Georgia, serif';
+    ctx.fillText('Happy Diwali', 512, 128);
+    textMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(76, 19),
+      new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(c), transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false
+      })
+    );
+    textMesh.position.copy(TEXT_POS);
+    scene.add(textMesh);
+  })();
+
+  // ---------- Switch logic ----------
+  let on = false;
+  let leverAngle = 0.7, leverTarget = 0.7;
+  let nextLaunch = 0, sparkleTimer = 0;
+
+  function toggle() {
+    initAudio();
+    on = !on;
+    clickSound();
+    leverTarget = on ? -0.7 : 0.7;
+    ledMat.color.set(on ? 0xffc030 : 0xaa2200);
+    ledLight.color.set(on ? 0xffaa33 : 0xff2200);
+    ledLight.intensity = on ? 1.6 : 0.9;
+    textTarget = on ? 1 : 0;
+    if (on) {
+      nextLaunch = 1.2;
+      for (let i = 0; i < 7; i++) setTimeout(() => { if (on) launch(true); }, 250 + i * 330);
+    }
+  }
+
+  // ---------- Controls ----------
+  const keys = {};
+  const hint = document.getElementById('hint');
+  const prompt_ = document.getElementById('prompt');
+  const pad = document.getElementById('pad');
+
+  function unlockAudio() {
+    initAudio();
+    if (ac && ac.state === 'suspended') ac.resume();
+  }
+  addEventListener('pointerdown', unlockAudio);
+  addEventListener('keydown', unlockAudio);
+
+  function act(a) {
+    if (a === 'rocket') playerRocket();
+    else lightCracker(a);                          // anaar | chakri | phul | bomb | ladi
+  }
+  const keyActions = { Digit1: 'anaar', Digit2: 'chakri', Digit3: 'phul', Digit4: 'bomb', Digit5: 'ladi', KeyR: 'rocket' };
+
+  addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (e.code === 'Space') e.preventDefault();
+    if (e.repeat) return;
+    if (e.code === 'KeyE' && nearSwitch()) toggle();
+    if (keyActions[e.code]) act(keyActions[e.code]);
+  });
+  addEventListener('keyup', e => { keys[e.code] = false; });
+
+  const locked = () => document.pointerLockElement === renderer.domElement;
+
+  document.addEventListener('mousemove', e => {
+    if (!locked()) return;
+    yaw -= e.movementX * 0.0022;
+    pitch -= e.movementY * 0.0022;                 // mouse upar = upar dekhna
+    pitch = Math.max(-1.45, Math.min(1.45, pitch));
+  });
+  document.addEventListener('mousedown', e => {
+    if (e.button === 0 && locked()) playerRocket();
+  });
+  document.addEventListener('click', () => {
+    if (!isTouch && !locked()) renderer.domElement.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    prompt_.style.display = (isTouch || locked()) ? 'none' : 'block';
+  });
+
+  // Touch: left half = chalo, right half = dekho
+  const touch = { moveId: null, sx: 0, sy: 0, mx: 0, my: 0, lookId: null, lx: 0, ly: 0 };
+  const clamp = (v) => Math.max(-1, Math.min(1, v));
+  addEventListener('touchstart', e => {
+    for (const t of e.changedTouches) {
+      if (t.clientX < innerWidth / 2 && touch.moveId === null) {
+        touch.moveId = t.identifier; touch.sx = t.clientX; touch.sy = t.clientY;
+      } else if (t.clientX >= innerWidth / 2 && touch.lookId === null) {
+        touch.lookId = t.identifier; touch.lx = t.clientX; touch.ly = t.clientY;
+      }
+    }
+  }, { passive: false });
+  addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier === touch.moveId) {
+        touch.mx = clamp((t.clientX - touch.sx) / 50);
+        touch.my = clamp((t.clientY - touch.sy) / 50);
+      } else if (t.identifier === touch.lookId) {
+        yaw -= (t.clientX - touch.lx) * 0.005;
+        pitch -= (t.clientY - touch.ly) * 0.005;
+        pitch = Math.max(-1.45, Math.min(1.45, pitch));
+        touch.lx = t.clientX; touch.ly = t.clientY;
+      }
+    }
+  }, { passive: false });
+  const endTouch = e => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === touch.moveId) { touch.moveId = null; touch.mx = touch.my = 0; }
+      if (t.identifier === touch.lookId) touch.lookId = null;
+    }
+  };
+  addEventListener('touchend', endTouch);
+  addEventListener('touchcancel', endTouch);
+
+  hint.addEventListener('touchstart', e => { e.stopPropagation(); e.preventDefault(); toggle(); }, { passive: false });
+
+  pad.addEventListener('touchstart', e => {
+    e.stopPropagation(); e.preventDefault();
+    const b = e.target.closest('button');
+    if (!b) return;
+    const a = b.dataset.a;
+    if (a === 'jump') keys.Space = true;
+    else if (a === 'sprint') keys.ShiftLeft = true;
+    else act(a);
+  }, { passive: false });
+  const padEnd = e => { e.stopPropagation(); keys.Space = false; keys.ShiftLeft = false; };
+  pad.addEventListener('touchend', padEnd);
+  pad.addEventListener('touchcancel', padEnd);
+
+  function nearSwitch() {
+    return Math.hypot(player.pos.x - SWITCH_POS.x, player.pos.z - SWITCH_POS.z) < 3.2;
+  }
+
+  // ---------- Player physics + animation ----------
+  let landDip = 0;                               // kudke utarne pe camera ka halka dabna
+
+  function updatePlayer(dt) {
+    // 1) input -> camera ke hisaab se direction
+    const fwd = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0) - touch.my;
+    const str = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + touch.mx;
+    const sy = Math.sin(yaw), cy = Math.cos(yaw);
+    let dx = -sy * fwd + cy * str;
+    let dz = -cy * fwd - sy * str;
+    const mag = Math.hypot(dx, dz);
+    if (mag > 1) { dx /= mag; dz /= mag; }
+
+    // 2) target speed (jog / sprint) aur acceleration (momentum)
+    const maxSpeed = keys.ShiftLeft || keys.ShiftRight ? 8 : 4.5;       // m/s
+    const accel = player.onGround ? 12 : 2.5;                            // hawa mein control kam
+    const k = Math.min(1, accel * dt);
+    player.vel.x += (dx * maxSpeed - player.vel.x) * k;
+    player.vel.z += (dz * maxSpeed - player.vel.z) * k;
+
+    // 3) jump + gravity (v = v + g*t, y = y + v*t)
+    if (keys.Space && player.onGround) {
+      player.vel.y = 5.2;                                                // ~1.4 m ooncha kudta hai
+      player.onGround = false;
+    }
+    player.vel.y -= G * dt;
+    player.pos.x += player.vel.x * dt;
+    player.pos.y += player.vel.y * dt;
+    player.pos.z += player.vel.z * dt;
+
+    if (player.pos.y <= 0) {
+      if (!player.onGround && player.vel.y < -3) {
+        thud(Math.min(0.5, -player.vel.y * 0.06));
+        landDip = Math.min(0.3, -player.vel.y * 0.04);
+      }
+      player.pos.y = 0;
+      player.vel.y = 0;
+      player.onGround = true;
+    } else {
+      player.onGround = false;
+    }
+
+    // 4) khambhon se takkar
+    for (const o of obstacles) {
+      const ox = player.pos.x - o.x, oz = player.pos.z - o.z, d = Math.hypot(ox, oz);
+      if (d < o.r) {
+        player.pos.x = o.x + (ox / (d || 1)) * o.r;
+        player.pos.z = o.z + (oz / (d || 1)) * o.r;
+      }
+    }
+    player.pos.x = Math.max(-400, Math.min(400, player.pos.x));
+    player.pos.z = Math.max(-400, Math.min(400, player.pos.z));
+
+    // 5) character chalne ki taraf ghoomta hai
+    const hs = Math.hypot(player.vel.x, player.vel.z);
+    if (hs > 0.4) {
+      const target = Math.atan2(-player.vel.x, -player.vel.z);
+      let diff = target - player.face;
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff));                 // -PI..PI
+      player.face += diff * Math.min(1, dt * 12);
+    }
+    avatar.position.copy(player.pos);
+    avatar.rotation.y = player.face;
+
+    // 6) haath-pair ka animation
+    player.phase += hs * dt * 1.9;
+    const ampTarget = player.onGround ? Math.min(hs / 6, 1) * 0.95 : 0;
+    player.amp += (ampTarget - player.amp) * Math.min(1, dt * 10);
+    const sw_ = Math.sin(player.phase) * player.amp;
+    if (player.onGround) {
+      legL.rotation.x = sw_;  legR.rotation.x = -sw_;
+      armL.rotation.x = -sw_ * 0.9; armR.rotation.x = sw_ * 0.9;
+    } else {                                                             // hawa mein
+      legL.rotation.x = 0.6;  legR.rotation.x = -0.25;
+      armL.rotation.x = -0.9; armR.rotation.x = -0.9;
+    }
+    body.rotation.x = -Math.min(hs / 8, 1) * 0.18;                       // daudte waqt aage jhukna
+    body.position.y = player.onGround ? Math.abs(Math.sin(player.phase)) * 0.05 * player.amp : 0;
+
+    // 7) first-person camera: aankhein character ke sir pe (1.7 m ooncha)
+    const bob = player.onGround ? Math.sin(player.phase * 2) * 0.035 * player.amp : 0;   // chalte waqt halka hilna
+    landDip *= Math.exp(-dt * 9);
+    camera.position.set(player.pos.x, player.pos.y + 1.7 + bob - landDip, player.pos.z);
+    camera.rotation.set(pitch + (Math.random() - 0.5) * shake, yaw + (Math.random() - 0.5) * shake, 0);
+    shake *= Math.exp(-dt * 6);
+  }
+
+  // ---------- Main loop ----------
+  const clock = new THREE.Clock();
+  function frame() {
+    requestAnimationFrame(frame);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    const time = clock.elapsedTime;
+
+    updatePlayer(dt);
+
+    const near = nearSwitch();
+    hint.textContent = isTouch
+      ? (on ? 'Tap: switch band karo' : 'Tap: switch on karo')
+      : (on ? 'E dabao: switch band karo' : 'E dabao: switch on karo');
+    hint.classList.toggle('show', near);
+
+    if (on) {
+      nextLaunch -= dt;
+      if (nextLaunch <= 0) {
+        const burst = Math.random() < 0.3 ? 2 + Math.floor(Math.random() * 2) : 1;
+        for (let i = 0; i < burst; i++) launch(false);
+        nextLaunch = 0.5 + Math.random() * 1.0;
+      }
+      sparkleTimer -= dt;
+      if (sparkleTimer <= 0 && textOpacity > 0.5) {
+        sparkleTimer = 0.06;
+        for (let i = 0; i < 4; i++) {
+          spawn(TEXT_POS.x + (Math.random() - 0.5) * 70, TEXT_POS.y + (Math.random() - 0.5) * 18, TEXT_POS.z,
+            (Math.random() - 0.5) * 2, -1 - Math.random() * 2, (Math.random() - 0.5) * 2,
+            1, 0.8, 0.35, 1.6, 1);
+        }
+      }
+    }
+
+    leverAngle += (leverTarget - leverAngle) * Math.min(1, dt * 14);
+    leverPivot.rotation.x = leverAngle;
+    const fadeSpeed = textTarget > textOpacity ? 0.5 : 2.0;
+    textOpacity += (textTarget - textOpacity) * Math.min(1, dt * fadeSpeed);
+    textMesh.material.opacity = textOpacity;
+    textMesh.lookAt(camera.position);
+
+    updateFields(dt, time);
+    updateRockets(dt);
+    updateCrackers(dt);
+    updateParticles(dt);
+    for (const l of flashes) l.intensity *= Math.exp(-dt * 3);
+
+    renderer.render(scene, camera);
+  }
+  frame();
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+})();
+</script>
+</body>
+</html>
